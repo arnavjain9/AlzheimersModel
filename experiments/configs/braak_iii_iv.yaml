@@ -1,0 +1,40 @@
+# Braak Stage III-IV (Limbic) — Phase 2, Mild
+# Layers 0-18. Noise + attention disruption + KV corruption. Severity cap 0.5.
+experiment_id: braak_iii_iv_tau_mild
+
+disease_state:
+  braak_stage: III-IV
+  damage_phase: TAU
+  intensity: MILD
+
+damage_config:
+  noise:
+    noise_std: 0.08
+    noise_type: gaussian
+    apply_to_embeddings: true
+    apply_to_attention: true
+    apply_to_ffn: true
+    apply_to_layer_norm: false
+    scale_with_layer_depth: true
+  pruning:
+    prune_rate: 0.08
+    prune_type: magnitude
+    apply_compensation: true
+  neuron_death:
+    kill_rate: 0.04
+    use_functional_clustering: true
+    spreading_rate: 0.1
+  connectivity:
+    disrupt_positional_encoding: true
+    positional_noise_std: 0.05
+    kv_cache_corruption_rate: 0.05
+
+compensation:
+  compensation_reserve: 1.0
+  base_compensation_factor: 0.2
+  depletion_per_increment: 0.05
+
+evaluation:
+  battery: standard
+  epochs: 10
+  tasks_per_epoch: 20

@@ -1,0 +1,35 @@
+# Braak Stage I-II (Transentorhinal) — Phase 1, Subclinical
+# Layers 0-5 only. Noise injection only. Severity cap 0.3.
+experiment_id: braak_i_ii_amyloid_subclinical
+
+disease_state:
+  braak_stage: I-II
+  damage_phase: AMYLOID
+  intensity: SUBCLINICAL
+
+damage_config:
+  noise:
+    noise_std: 0.02
+    noise_type: gaussian
+    apply_to_embeddings: true
+    apply_to_attention: true
+    apply_to_ffn: true
+    apply_to_layer_norm: false
+    scale_with_layer_depth: true
+  pruning:
+    prune_rate: 0.0
+  neuron_death:
+    kill_rate: 0.0
+  connectivity:
+    disrupt_positional_encoding: false
+    kv_cache_corruption_rate: 0.0
+
+compensation:
+  compensation_reserve: 1.0
+  base_compensation_factor: 0.2
+  depletion_per_increment: 0.05
+
+evaluation:
+  battery: standard
+  epochs: 5
+  tasks_per_epoch: 20
