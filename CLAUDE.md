@@ -1,10 +1,12 @@
 # Alzheimer's Disease LLM Simulation — CLAUDE.md
 
 ## Project Overview
-This project simulates Alzheimer's disease progression in Qwen-32B by applying 
-real structural damage to model weights and architecture — not prompt-based 
-behavioral mimicry. The goal is cause-based degradation: damage the structure, 
-observe emergent behavioral deficits that mirror clinical AD symptomatology.
+This project simulates Alzheimer's disease progression in Qwen2.5 models by
+applying real structural damage to model weights and architecture — not
+prompt-based behavioral mimicry. The goal is cause-based degradation: damage
+the structure, observe emergent behavioral deficits that mirror clinical AD
+symptomatology. The codebase is model-agnostic; start with Qwen2.5-3B (Colab
+A100) and scale to 7B or 32B via `set_active_arch()` without code changes.
 
 ## Core Design Philosophy
 - **Cause-based, not symptom-based**: We structurally damage the network and 
@@ -39,27 +41,54 @@ Hippocampal function maps to cross-attention integration mechanisms.
 | Semantic memory | FFN weights, embedding space | FFN neuron death, weight pruning |
 | Procedural memory | Learned attention patterns | Attention head ablation |
 
-## Qwen-32B Architecture Parameters
-- Total layers: 36
-- Hidden dimension: 3584
-- FFN intermediate size: 18944
-- Attention: 32 Q heads / 8 KV heads (GQA, 4:1 ratio)
-- Context window: 32K native, 131K with YaRN
-- Vocabulary: 151,646 tokens
+## Supported Model Architectures
+
+The codebase is model-agnostic. Braak stage bounds and brain-region layer ranges
+are derived at runtime from the active `ArchitectureConfig`. Switch models with
+a single call — no other code changes required:
+
+```python
+from disease_state import set_active_arch, QWEN_3B, QWEN_7B, QWEN_32B
+set_active_arch(QWEN_7B)   # call before creating any DiseaseState
+```
+
+Default is `QWEN_3B` (fits on Colab A100 40 GB in bfloat16).
+
+| Config | Model | Layers | Hidden | FFN | Q heads | KV heads | GQA ratio |
+|---|---|---|---|---|---|---|---|
+| `QWEN_3B` | Qwen2.5-3B | 36 | 2048 | 11008 | 16 | 2 | 8:1 |
+| `QWEN_7B` | Qwen2.5-7B | 28 | 3584 | 18944 | 28 | 4 | 7:1 |
+| `QWEN_32B` | Qwen2.5-32B | 64 | 5120 | 27648 | 40 | 8 | 5:1 |
+
+Always verify exact values against the actual model's `config.json` before
+running experiments:
+```python
+from transformers import AutoConfig
+cfg = AutoConfig.from_pretrained("Qwen/Qwen2.5-7B")
+print(cfg.num_hidden_layers, cfg.hidden_size, cfg.intermediate_size,
+      cfg.num_attention_heads, cfg.num_key_value_heads)
+```
 
 ### GQA Critical Constraint
-Qwen uses Grouped Query Attention: 32 Q heads share 8 KV heads (4 Q per KV group).
-Damaging 1 KV head affects 4 Q heads simultaneously. Always account for this 
-multiplier when implementing attention damage. Never treat Q and KV heads as 
-independent.
+Qwen uses Grouped Query Attention — each KV head is shared by multiple Q heads.
+Damaging 1 KV head affects `gqa_ratio` Q heads simultaneously. Always account
+for this multiplier when implementing attention damage. Never treat Q and KV
+heads as independent. GQA ratio differs by model (see table above).
 
-### Layer-to-Brain-Region Mapping (36 layers)
-| Brain Region | Layers | Proportion | AD Vulnerability |
+### Layer-to-Brain-Region Mapping (percentage-based, model-agnostic)
+Boundaries are derived as a percentage of total layer count. Reference values
+below are for a 36-layer model; they scale automatically for other sizes.
+
+| Brain Region | Proportion | Ref layers (36) | AD Vulnerability |
 |---|---|---|---|
-| Entorhinal cortex analogue | 0-5 | 0-14% | Very early (Braak I-II) |
-| Hippocampal analogue | 6-12 | 17-33% | Early (Braak III-IV) |
-| Temporal association analogue | 13-24 | 36-67% | Early-middle |
-| Prefrontal analogue | 25-35 | 69-100% | Middle-late |
+| Entorhinal cortex analogue | 0–14% | 0–5 | Very early (Braak I-II) |
+| Hippocampal analogue | 14–34% | 6–12 | Early (Braak III-IV) |
+| Temporal association analogue | 34–69% | 13–24 | Early-middle |
+| Prefrontal analogue | 69–100% | 25–35 | Middle-late |
+
+Regions are forced contiguous — each region starts immediately after the
+previous region ends. For 28-layer (7B): entorhinal 0–4, hippocampal 5–9,
+temporal 10–19, prefrontal 20–27.
 
 ### Key Component Access Points
 | Component | Attribute Path |
@@ -84,12 +113,15 @@ Always implement damage in two phases:
    connectivity, structural degradation
 
 ## Braak Staging Implementation
-| Stage | Layers | Mechanisms | Severity Cap |
-|---|---|---|---|
-| I-II (Transentorhinal) | 0-5 | Noise injection, mild synaptic dysfunction | 0.3 |
-| III-IV (Limbic) | 0-18 | Synaptic dysfunction, attention disruption, KV corruption | 0.5 |
-| V (Neocortical early) | 0-29 | All above + clustered neuron death, FFN pruning | 0.7 |
-| VI (Neocortical late) | 0-35 | All above + widespread structural damage | 1.0 |
+Layer bounds are percentage-derived from total layer count (see `BraakStage.layer_bounds`).
+Reference values below are for a 36-layer model; they scale automatically.
+
+| Stage | Proportion | Ref layers (36) | Mechanisms | Severity Cap |
+|---|---|---|---|---|
+| I-II (Transentorhinal) | first ~14% | 0–5 | Noise injection, mild synaptic dysfunction | 0.3 |
+| III-IV (Limbic) | first ~50% | 0–18 | Synaptic dysfunction, attention disruption, KV corruption | 0.5 |
+| V (Neocortical early) | first ~83% | 0–29 | All above + clustered neuron death, FFN pruning | 0.7 |
+| VI (Neocortical late) | all layers | 0–35 | All above + widespread structural damage | 1.0 |
 
 ## Project Structure
 ```

@@ -40,16 +40,105 @@ SparseDeltaT = Dict[str, Any]      # single param: {param_name, flat_indices, or
 WeightSnapshot = List[SparseDeltaT]  # full snapshot returned by each damage function
 
 # ---------------------------------------------------------------------------
-# Architecture constants — Qwen-32B
+# Architecture configuration — model-agnostic
 # ---------------------------------------------------------------------------
 
-QWEN_NUM_LAYERS: int = 36
-QWEN_HIDDEN_DIM: int = 3584
-QWEN_FFN_INTERMEDIATE: int = 18944
-QWEN_NUM_Q_HEADS: int = 32
-QWEN_NUM_KV_HEADS: int = 8
-QWEN_GQA_RATIO: int = QWEN_NUM_Q_HEADS // QWEN_NUM_KV_HEADS  # 4 Q heads per KV head
-QWEN_VOCAB_SIZE: int = 151_646
+
+@dataclass(frozen=True)
+class ArchitectureConfig:
+    """Immutable specification of a Qwen model variant's architecture.
+
+    All layer-bound derivations (BraakStage, BrainRegion) are computed at
+    runtime from ``num_layers``, so switching model size is a single call to
+    ``set_active_arch()``.  No other file needs to change.
+
+    Usage::
+
+        from disease_state import set_active_arch, QWEN_7B
+        set_active_arch(QWEN_7B)
+
+    Verify values against the actual model's ``config.json`` before running
+    experiments — load it with::
+
+        from transformers import AutoConfig
+        cfg = AutoConfig.from_pretrained("Qwen/Qwen2.5-7B")
+        print(cfg.num_hidden_layers, cfg.hidden_size, ...)
+    """
+
+    name: str
+    num_layers: int
+    hidden_dim: int
+    ffn_intermediate: int
+    num_q_heads: int
+    num_kv_heads: int
+    vocab_size: int
+
+    @property
+    def gqa_ratio(self) -> int:
+        """Number of Q heads sharing each KV head (Grouped Query Attention)."""
+        return self.num_q_heads // self.num_kv_heads
+
+
+# ---------------------------------------------------------------------------
+# Pre-defined architecture configs
+# Verify exact values against HuggingFace config.json for each checkpoint.
+# ---------------------------------------------------------------------------
+
+QWEN_3B = ArchitectureConfig(
+    name="Qwen2.5-3B",
+    num_layers=36,
+    hidden_dim=2048,
+    ffn_intermediate=11008,
+    num_q_heads=16,
+    num_kv_heads=2,
+    vocab_size=151_936,
+)
+
+QWEN_7B = ArchitectureConfig(
+    name="Qwen2.5-7B",
+    num_layers=28,
+    hidden_dim=3584,
+    ffn_intermediate=18944,
+    num_q_heads=28,
+    num_kv_heads=4,
+    vocab_size=151_936,
+)
+
+QWEN_32B = ArchitectureConfig(
+    name="Qwen2.5-32B",
+    num_layers=64,
+    hidden_dim=5120,
+    ffn_intermediate=27648,
+    num_q_heads=40,
+    num_kv_heads=8,
+    vocab_size=151_936,
+)
+
+# Active model — default to 3B (fits on Colab A100 40 GB in bfloat16).
+# Change with set_active_arch(QWEN_7B) before creating any DiseaseState.
+_active_arch: ArchitectureConfig = QWEN_3B
+
+
+def get_active_arch() -> "ArchitectureConfig":
+    """Return the currently active architecture configuration."""
+    return _active_arch
+
+
+def set_active_arch(config: "ArchitectureConfig") -> None:
+    """Switch the active model architecture.
+
+    Call once at the top of a notebook/script *before* creating DiseaseState
+    objects.  BraakStage bounds and BrainRegion layer ranges update
+    automatically — no other code needs to change.
+
+    Example::
+
+        from disease_state import set_active_arch, QWEN_7B
+        set_active_arch(QWEN_7B)
+        state = DiseaseState.from_braak_stage(BraakStage.III_IV, ...)
+    """
+    global _active_arch
+    _active_arch = config
 
 # ---------------------------------------------------------------------------
 # Enumerations
@@ -74,13 +163,25 @@ class BraakStage(Enum):
 
     @property
     def layer_bounds(self) -> Tuple[int, int]:
-        """(start, end_inclusive) indices of affected layers."""
-        return {
-            BraakStage.I_II:   (0, 5),
-            BraakStage.III_IV: (0, 18),
-            BraakStage.V:      (0, 29),
-            BraakStage.VI:     (0, 35),
+        """(start, end_inclusive) indices of affected layers.
+
+        Bounds are derived as a fraction of the active architecture's layer
+        count, calibrated to a 36-layer reference model:
+            I-II   → first ~14% of layers (ref: 0–5)
+            III-IV → first ~50% of layers (ref: 0–18)
+            V      → first ~83% of layers (ref: 0–29)
+            VI     → all layers           (ref: 0–35)
+
+        Switch models with ``set_active_arch()`` — bounds update automatically.
+        """
+        n = get_active_arch().num_layers
+        end = {
+            BraakStage.I_II:   round(5  / 35 * (n - 1)),
+            BraakStage.III_IV: round(18 / 35 * (n - 1)),
+            BraakStage.V:      round(29 / 35 * (n - 1)),
+            BraakStage.VI:     n - 1,
         }[self]
+        return (0, end)
 
     @property
     def layer_range(self) -> range:
@@ -185,24 +286,44 @@ class DamageIntensity(Enum):
 
 
 class BrainRegion(Enum):
-    """Functional brain region analogues for the 36 Qwen-32B layers.
+    """Functional brain region analogues for Qwen transformer layers.
 
     Vulnerability order follows known AD progression:
     entorhinal → hippocampal → temporal association → prefrontal.
+
+    Layer ranges are percentage-derived from the active architecture's
+    ``num_layers`` (see ``set_active_arch()``), so the same enum works across
+    3B (36 layers), 7B (28 layers), and 32B (64 layers) models.
     """
 
-    ENTORHINAL = "entorhinal"                      # Layers 0–5   (Braak I-II seed)
-    HIPPOCAMPAL = "hippocampal"                    # Layers 6–12  (Braak III-IV)
-    TEMPORAL_ASSOCIATION = "temporal_association"  # Layers 13–24 (Braak V)
-    PREFRONTAL = "prefrontal"                      # Layers 25–35 (Braak VI)
+    ENTORHINAL = "entorhinal"                      # First ~14% of layers
+    HIPPOCAMPAL = "hippocampal"                    # ~14–34% of layers
+    TEMPORAL_ASSOCIATION = "temporal_association"  # ~34–69% of layers
+    PREFRONTAL = "prefrontal"                      # ~69–100% of layers
 
     @property
     def layer_range(self) -> range:
+        """Layer range for this region in the active architecture.
+
+        Boundary fractions calibrated to the 36-layer reference model:
+            ENTORHINAL ends at          5/35 ≈ 14%  (ref end: layer 5)
+            HIPPOCAMPAL ends at        12/35 ≈ 34%  (ref end: layer 12)
+            TEMPORAL_ASSOCIATION ends at 24/35 ≈ 69%  (ref end: layer 24)
+            PREFRONTAL ends at last layer            (ref end: layer 35)
+
+        Regions are forced contiguous: each start = previous end + 1.
+        For the 36-layer ref model this reproduces [0-5],[6-12],[13-24],[25-35].
+        """
+        n = get_active_arch().num_layers
+        e0 = round(5  / 35 * (n - 1))  # ENTORHINAL end
+        e1 = round(12 / 35 * (n - 1))  # HIPPOCAMPAL end
+        e2 = round(24 / 35 * (n - 1))  # TEMPORAL_ASSOCIATION end
+        e3 = n - 1                      # PREFRONTAL end
         return {
-            BrainRegion.ENTORHINAL:           range(0, 6),
-            BrainRegion.HIPPOCAMPAL:          range(6, 13),
-            BrainRegion.TEMPORAL_ASSOCIATION: range(13, 25),
-            BrainRegion.PREFRONTAL:           range(25, 36),
+            BrainRegion.ENTORHINAL:           range(0,      e0 + 1),
+            BrainRegion.HIPPOCAMPAL:          range(e0 + 1, e1 + 1),
+            BrainRegion.TEMPORAL_ASSOCIATION: range(e1 + 1, e2 + 1),
+            BrainRegion.PREFRONTAL:           range(e2 + 1, e3 + 1),
         }[self]
 
     @property
@@ -493,8 +614,8 @@ class LayerDamageState:
 
     @property
     def affected_q_head_count(self) -> int:
-        """Number of Q heads impaired via GQA coupling (4 Q per KV head)."""
-        return self.ablated_kv_head_count * QWEN_GQA_RATIO
+        """Number of Q heads impaired via GQA coupling."""
+        return self.ablated_kv_head_count * get_active_arch().gqa_ratio
 
     def invalidate_masks(self) -> None:
         """Mark precomputed masks stale so the next damage pass recomputes them.
@@ -553,7 +674,7 @@ class DiseaseState:
                     layer_idx=i,
                     brain_region=layer_to_brain_region(i),
                 )
-                for i in range(QWEN_NUM_LAYERS)
+                for i in range(get_active_arch().num_layers)
             }
 
     # ------------------------------------------------------------------
@@ -685,10 +806,15 @@ class DiseaseState:
 
 
 def layer_to_brain_region(layer_idx: int) -> BrainRegion:
-    """Map a Qwen-32B transformer layer index to its brain region analogue."""
+    """Map a transformer layer index to its brain region analogue.
+
+    Uses the active architecture config (set via ``set_active_arch()``).
+    """
     for region in BrainRegion:
         if layer_idx in region.layer_range:
             return region
+    arch = get_active_arch()
     raise ValueError(
-        f"Layer index {layer_idx} out of valid range [0, {QWEN_NUM_LAYERS - 1}]"
+        f"Layer index {layer_idx} out of valid range "
+        f"[0, {arch.num_layers - 1}] for {arch.name}"
     )
