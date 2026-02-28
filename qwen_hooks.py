@@ -124,14 +124,21 @@ def _apply_static_damage(model: object, state: DiseaseState) -> WeightSnapshot:
 
 
 def _restore_static_damage(model: object, snapshot: WeightSnapshot) -> None:
-    """Scatter original values back for every sparse delta in the snapshot.
+    """Restore all static weight mutations using the delta-type dispatch table.
 
-    Per delta:
-        param.data.view(-1).scatter_(0, flat_indices, original_values)
+    Supported delta types
+    ---------------------
+    ``"additive_noise"``
+        Restore by subtraction: ``param.data -= delta["noise"]``.
+        Note: in BF16/FP16 ``(x + n) - n ≈ x`` with tiny rounding error.
+
+    ``"sparse_zero_with_compensation"``
+        1. Undo compensation scale: ``param.data /= delta["comp_mult"]``
+           (zeroed positions stay 0; surviving weights revert to pre-prune).
+        2. Scatter original values back: ``scatter_(0, flat_indices, original_values)``.
 
     Runs unconditionally in the finally block. Logs warnings on missing
-    parameters rather than raising, to guarantee full restoration of all
-    other parameters.
+    parameters rather than raising, so all other parameters are still restored.
     """
     if not snapshot:
         return
@@ -140,10 +147,16 @@ def _restore_static_damage(model: object, snapshot: WeightSnapshot) -> None:
 
     param_map: dict = dict(model.named_parameters())
 
-    for delta in snapshot:
+    # Iterate in REVERSE application order (undo-stack semantics).
+    # When noise and pruning are both applied to the same parameter,
+    # the pruning delta must be undone first, then the noise delta.
+    # Example: param = (orig + noise) * comp_mult
+    #   Step 1 (reversed): div comp_mult → orig + noise; scatter → orig + noise
+    #   Step 2 (reversed): subtract noise → orig  ✓
+    # Forward order would subtract noise from the scaled weight first, giving wrong result.
+    for delta in reversed(snapshot):
         param_name: str = delta["param_name"]
-        flat_indices = delta["flat_indices"]        # torch.LongTensor, 1-D
-        original_values = delta["original_values"]  # torch.Tensor, param.dtype
+        delta_type: str = delta.get("delta_type", "sparse_zero")
 
         if param_name not in param_map:
             logger.warning(
@@ -153,8 +166,27 @@ def _restore_static_damage(model: object, snapshot: WeightSnapshot) -> None:
             continue
 
         param = param_map[param_name]
-        # In-place scatter — no allocation beyond what scatter_ requires.
-        param.data.view(-1).scatter_(0, flat_indices, original_values)
+
+        if delta_type == "additive_noise":
+            # Additive restore: subtract the stored noise tensor in-place.
+            # noise was generated in param.dtype, so no upcast needed.
+            param.data.sub_(delta["noise"])
+
+        elif delta_type == "sparse_zero_with_compensation":
+            comp_mult: float = delta.get("comp_mult", 1.0)
+            if comp_mult != 1.0:
+                # Undo compensation scale on surviving weights.
+                # Zeroed positions: 0 / comp_mult = 0 — correct, scatter fixes them.
+                param.data.div_(comp_mult)
+            param.data.view(-1).scatter_(
+                0, delta["flat_indices"], delta["original_values"]
+            )
+
+        else:
+            # Fallback: plain sparse-index restore (no compensation).
+            param.data.view(-1).scatter_(
+                0, delta["flat_indices"], delta["original_values"]
+            )
 
 
 # ---------------------------------------------------------------------------
