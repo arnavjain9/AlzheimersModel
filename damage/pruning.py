@@ -372,7 +372,14 @@ def sanity_check_pruning(verbose: bool = True) -> bool:
     _log("sanity_check_pruning — magnitude pruning & restoration")
     _log("=" * 60)
 
-    # --- Build mock model (FP32, CPU, 6 layers = BraakStage.I_II) ---
+    # This sanity check uses a 6-layer mock whose BraakStage.I_II range
+    # (layers 0–5) matches only when the active arch has 36 layers (QWEN_3B).
+    # Save and restore the active arch so the check is self-contained.
+    from disease_state import get_active_arch, set_active_arch, QWEN_3B
+    _saved_arch = get_active_arch()
+    set_active_arch(QWEN_3B)
+
+    # --- Build mock model (FP32, CPU, 6 layers = BraakStage.I_II under QWEN_3B) ---
     N_LAYERS = 6
     D, FFN_D = 16, 32
     PRUNE_RATE = 0.10      # 10% — clear enough to test without being trivial
@@ -519,6 +526,7 @@ def sanity_check_pruning(verbose: bool = True) -> bool:
     _log("\n" + "=" * 60)
     _log("sanity_check_pruning PASSED")
     _log("=" * 60)
+    set_active_arch(_saved_arch)
     return True
 
 

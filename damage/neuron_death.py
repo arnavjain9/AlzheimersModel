@@ -10,7 +10,8 @@ layers 0–5) and propagates along functional connectivity at a rate set by
 NeuronDeathConfig.spreading_rate per epoch.
 
 NOTE — GQA: When attention heads are ablated, remember that each KV head
-maps to 4 Q heads. Always account for this 4:1 multiplier.
+maps to get_active_arch().gqa_ratio Q heads. Always use this multiplier,
+never a hardcoded value — the ratio differs by model (3B: 8, 7B: 7, 32B: 5).
 
 Implementation is deferred — this module is a stub.
 """

@@ -263,8 +263,15 @@ def sanity_check_noise(verbose: bool = True) -> bool:
     _log("sanity_check_noise — Gaussian noise injection & restoration")
     _log("=" * 60)
 
+    # This sanity check uses a 6-layer mock whose BraakStage.I_II range
+    # (layers 0–5) matches only when the active arch has 36 layers (QWEN_3B).
+    # Save and restore the active arch so the check is self-contained.
+    from disease_state import get_active_arch, set_active_arch, QWEN_3B
+    _saved_arch = get_active_arch()
+    set_active_arch(QWEN_3B)
+
     # --- Build mock model (FP32, CPU, 6 layers matching BraakStage.I_II) ---
-    N_LAYERS = 6   # BraakStage.I_II affects layers 0-5
+    N_LAYERS = 6   # BraakStage.I_II affects layers 0-5 under QWEN_3B (36 layers)
     D, FFN_D = 16, 32
     mock = _MockQwen(n_layers=N_LAYERS, d=D, ffn_d=FFN_D)
 
@@ -372,6 +379,7 @@ def sanity_check_noise(verbose: bool = True) -> bool:
     _log("\n" + "=" * 60)
     _log("sanity_check_noise PASSED")
     _log("=" * 60)
+    set_active_arch(_saved_arch)
     return True
 
 

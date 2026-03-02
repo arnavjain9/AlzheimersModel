@@ -140,6 +140,39 @@ def set_active_arch(config: "ArchitectureConfig") -> None:
     global _active_arch
     _active_arch = config
 
+
+def arch_from_model_config(hf_config: object) -> "ArchitectureConfig":
+    """Build an ArchitectureConfig from a loaded HuggingFace model config.
+
+    Reads all architecture parameters dynamically so the simulation is correct
+    even if a checkpoint's values differ from the pre-defined constants
+    (QWEN_3B, QWEN_7B, QWEN_32B).  Call this immediately after loading a
+    model and pass the result to ``set_active_arch``::
+
+        from disease_state import arch_from_model_config, set_active_arch
+        model = AutoModelForCausalLM.from_pretrained(MODEL_ID, ...)
+        set_active_arch(arch_from_model_config(model.config))
+
+    Args:
+        hf_config: A HuggingFace ``PretrainedConfig`` object (``model.config``).
+
+    Returns:
+        ``ArchitectureConfig`` populated entirely from the live config values.
+    """
+    name: str = (
+        getattr(hf_config, "_name_or_path", None)
+        or getattr(hf_config, "model_type", "unknown")
+    )
+    return ArchitectureConfig(
+        name=name,
+        num_layers=hf_config.num_hidden_layers,
+        hidden_dim=hf_config.hidden_size,
+        ffn_intermediate=hf_config.intermediate_size,
+        num_q_heads=hf_config.num_attention_heads,
+        num_kv_heads=hf_config.num_key_value_heads,
+        vocab_size=hf_config.vocab_size,
+    )
+
 # ---------------------------------------------------------------------------
 # Enumerations
 # ---------------------------------------------------------------------------
